@@ -9,6 +9,11 @@
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/GeometricTools.hlsl"
 
 TEXTURE2D(_VolumetricCloudsShadow);
+TEXTURE2D(_OriginalLightCookieTexture);
+SAMPLER(sampler_OriginalLightCookieTexture);
+float4x4 _OriginalLightCookieMatrix;
+float4 _OriginalLightCookieOffset;
+half _HasOriginalLightCookie;
 
 half _ShadowCookieResolution;
 float3 _CloudShadowSunOrigin;
@@ -28,6 +33,7 @@ half3 TraceVolumetricCloudsShadows(Varyings input) : SV_Target
 
     // Compute the origin of the ray properties in the planet space
     float3 rayOriginPS = _CloudShadowSunOrigin.xyz + (normalizedCoord.x * _CloudShadowSunRight.xyz + normalizedCoord.y * _CloudShadowSunUp.xyz);
+    float3 baseRayOriginPS = rayOriginPS; // capture before startDistance offset, used for original cookie UV
     half3 rayDirection = -_CloudShadowSunForward.xyz;
 
     // Compute the attenuation
@@ -105,6 +111,16 @@ half3 TraceVolumetricCloudsShadows(Varyings input) : SV_Target
     */
 
     half3 result = validShadow ? shadows.xxx : half3(1.0, 1.0, 1.0);
+
+    // Blend with the original directional light cookie if one was set
+    if (_HasOriginalLightCookie > 0.5)
+    {
+        float3 worldPos = baseRayOriginPS + _PlanetCenterRadius.xyz;
+        float4 posLS = mul(_OriginalLightCookieMatrix, float4(worldPos, 1.0));
+        float2 cookieUV = posLS.xy + 0.5 + _OriginalLightCookieOffset.xy;
+        half origCookie = SAMPLE_TEXTURE2D(_OriginalLightCookieTexture, sampler_OriginalLightCookieTexture, cookieUV).r;
+        result *= origCookie;
+    }
 
     return result;
 }

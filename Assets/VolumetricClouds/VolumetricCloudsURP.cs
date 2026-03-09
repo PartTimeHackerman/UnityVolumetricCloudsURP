@@ -1502,6 +1502,13 @@ public class VolumetricCloudsURP : ScriptableRendererFeature
 
         private Light targetLight;
 
+        private Texture _originalCookie;
+        private Vector2 _originalCookieSize = Vector2.one;
+        private Vector2 _originalCookieOffset = Vector2.zero;
+
+        private Texture2D _dummyCookieAtlas;
+        private static readonly int additionalLightsCookieAtlasTexture = Shader.PropertyToID("_AdditionalLightsCookieAtlasTexture");
+
         private static readonly int shadowCookieResolution = Shader.PropertyToID("_ShadowCookieResolution");
         private static readonly int shadowIntensity = Shader.PropertyToID("_ShadowIntensity");
         private static readonly int shadowOpacityFallback = Shader.PropertyToID("_ShadowOpacityFallback");
@@ -1681,6 +1688,7 @@ public class VolumetricCloudsURP : ScriptableRendererFeature
                 cmd.SetGlobalVector(volumetricCloudsShadowScale, float4(regionSize, 0.0f, 0.0f)); // Used in physically based sky
 
                 // Apply light cookie settings
+                SaveAndUploadOriginalCookie();
                 targetLight.cookie = null;
                 UniversalAdditionalLightData additonal = targetLight.GetComponent<UniversalAdditionalLightData>();
                 additonal.lightCookieSize = Vector2.one;
@@ -1703,6 +1711,8 @@ public class VolumetricCloudsURP : ScriptableRendererFeature
                 cmd.SetGlobalMatrix(mainLightWorldToLight, cookieMatrix);
                 cmd.SetGlobalFloat(mainLightCookieTextureFormat, cookieFormat);
                 cmd.EnableShaderKeyword(_LIGHT_COOKIES);
+                EnsureDummyCookieAtlas();
+                cmd.SetGlobalTexture(additionalLightsCookieAtlasTexture, _dummyCookieAtlas);
 
                 // Render shadow cookie texture
                 Blitter.BlitCameraTexture(cmd, shadowTextureHandle, shadowTextureHandle, cloudsMaterial, pass: 4);
@@ -1750,6 +1760,7 @@ public class VolumetricCloudsURP : ScriptableRendererFeature
             internal Vector4 shadowScale;
 
             internal bool isStereoEnabled;
+            internal Texture2D dummyCookieAtlas;
         }
 
         // This static method is used to execute the pass and passed as the RenderFunc delegate to the RenderGraph render pass
@@ -1774,6 +1785,8 @@ public class VolumetricCloudsURP : ScriptableRendererFeature
             cmd.SetGlobalMatrix(mainLightWorldToLight, data.mainLightWorldToLight);
             cmd.SetGlobalFloat(mainLightCookieTextureFormat, data.mainLightCookieTextureFormat);
             cmd.EnableShaderKeyword(_LIGHT_COOKIES);
+            if (data.dummyCookieAtlas != null)
+                cmd.SetGlobalTexture(additionalLightsCookieAtlasTexture, data.dummyCookieAtlas);
 
             if (data.isStereoEnabled)
                 cmd.EnableShaderKeyword(STEREO_INSTANCING_ON);
@@ -1892,6 +1905,7 @@ public class VolumetricCloudsURP : ScriptableRendererFeature
                 cloudsMaterial.SetVector(volumetricCloudsShadowOriginToggle, float4(c0, 0.0f));
 
                 // Apply light cookie settings
+                SaveAndUploadOriginalCookie();
                 targetLight.cookie = null;
                 UniversalAdditionalLightData additonal = targetLight.GetComponent<UniversalAdditionalLightData>();
                 additonal.lightCookieSize = Vector2.one;
@@ -1921,6 +1935,8 @@ public class VolumetricCloudsURP : ScriptableRendererFeature
                 passData.shadowOriginToggle = float4(c0, 0.0f);
                 passData.shadowScale = float4(regionSize, 0.0f, 0.0f);
                 passData.isStereoEnabled = cameraData.camera.stereoEnabled;
+                EnsureDummyCookieAtlas();
+                passData.dummyCookieAtlas = _dummyCookieAtlas;
 
                 // UnsafePasses don't setup the outputs using UseTextureFragment/UseTextureFragmentDepth, you should specify your writes with UseTexture instead
                 builder.UseTexture(passData.shadowTexture, AccessFlags.Write);
@@ -1978,16 +1994,47 @@ public class VolumetricCloudsURP : ScriptableRendererFeature
             }
         }
 
+        private void EnsureDummyCookieAtlas()
+        {
+            if (_dummyCookieAtlas == null)
+            {
+                _dummyCookieAtlas = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+                _dummyCookieAtlas.SetPixel(0, 0, Color.white);
+                _dummyCookieAtlas.Apply();
+                _dummyCookieAtlas.hideFlags = HideFlags.HideAndDontSave;
+            }
+        }
+
+        private void SaveAndUploadOriginalCookie()
+        {
+            _originalCookie = targetLight.cookie;
+            if (_originalCookie != null)
+            {
+                UniversalAdditionalLightData origData = targetLight.GetComponent<UniversalAdditionalLightData>();
+                _originalCookieSize = origData != null ? origData.lightCookieSize : Vector2.one;
+                _originalCookieOffset = origData != null ? origData.lightCookieOffset : Vector2.zero;
+                Matrix4x4 scaleMatrix = Matrix4x4.Scale(new Vector3(1f / _originalCookieSize.x, 1f / _originalCookieSize.y, 1f));
+                cloudsMaterial.SetTexture("_OriginalLightCookieTexture", _originalCookie);
+                cloudsMaterial.SetMatrix("_OriginalLightCookieMatrix", scaleMatrix * targetLight.transform.worldToLocalMatrix);
+                cloudsMaterial.SetVector("_OriginalLightCookieOffset", new Vector4(_originalCookieOffset.x, _originalCookieOffset.y, 0f, 0f));
+                cloudsMaterial.SetFloat("_HasOriginalLightCookie", 1f);
+            }
+            else
+            {
+                cloudsMaterial.SetFloat("_HasOriginalLightCookie", 0f);
+            }
+        }
+
         private void ResetShadowCookie()
         {
             if (targetLight != null)
             {
-                targetLight.cookie = null;
+                targetLight.cookie = _originalCookie;
                 UniversalAdditionalLightData additionalData = targetLight.GetComponent<UniversalAdditionalLightData>();
                 if (additionalData != null)
                 {
-                    additionalData.lightCookieSize = Vector2.one;
-                    additionalData.lightCookieOffset = Vector2.zero;
+                    additionalData.lightCookieSize = _originalCookieSize;
+                    additionalData.lightCookieOffset = _originalCookieOffset;
                 }
             }
         }
@@ -1997,6 +2044,11 @@ public class VolumetricCloudsURP : ScriptableRendererFeature
             ResetShadowCookie();
             shadowTextureHandle?.Release();
             intermediateShadowTextureHandle?.Release();
+            if (_dummyCookieAtlas != null)
+            {
+                UnityEngine.Object.DestroyImmediate(_dummyCookieAtlas);
+                _dummyCookieAtlas = null;
+            }
         }
         #endregion
     }
